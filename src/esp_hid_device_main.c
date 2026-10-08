@@ -107,6 +107,97 @@ void send_mouse(uint8_t buttons, char dx, char dy, char wheel)
     esp_hidd_dev_input_set(s_bt_hid_param.hid_dev, 0, 0, buffer, 4);
 }
 
+#define HALL_A_D0 GPIO_NUM_19
+#define HALL_B_D0 GPIO_NUM_21
+
+QueueHandle_t FILA_HALL;
+
+typedef struct {
+    int hall;
+    int estado;
+} hall_event_t;
+
+static void IRAM_ATTR hall_isr_handler(void *arg){
+    int HALL = (int)arg;
+    hall_event_t EVENTO = {
+        .hall = HALL,
+        .estado = gpio_get_level( HALL == 1 ? HALL_A_D0 : HALL_B_D0)
+    };
+
+    xQueueSendFromISR(FILA_HALL, &EVENTO, NULL);
+
+}
+
+void botao_hall_teste(void *arg){
+    FILA_HALL = xQueueCreate( 10, sizeof(hall_event_t));
+    hall_event_t EVENTO;
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << HALL_A_D0 | 1ULL << HALL_B_D0),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE
+
+    };
+
+    gpio_config(&io_conf);
+
+
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(
+            HALL_A_D0,
+            hall_isr_handler,
+            (void *)1
+
+    );
+
+    gpio_isr_handler_add(
+        HALL_B_D0,
+        hall_isr_handler,
+        (void *)2
+
+    );
+
+    int HALL_A_PRESSIONADO = 0;
+    int HALL_B_PRESSIONADO = 0;
+
+    while (1) {
+        xQueueReceive( FILA_HALL, &EVENTO, portMAX_DELAY);
+        printf( "HALL=%d ESTADO=%d\n", EVENTO.hall, EVENTO.estado);
+
+        if(EVENTO.hall == 1){
+            if(EVENTO.estado == 1){
+                HALL_A_PRESSIONADO = 1; 
+                printf("A pressionado");
+
+            } else if(EVENTO.estado == 0 && HALL_A_PRESSIONADO == 1){
+                HALL_A_PRESSIONADO = 0;
+                send_mouse( 1, 0, 0, 0);
+                printf("CLIQUE ESQ");
+
+            }
+
+        }
+
+        if(EVENTO.hall == 2){
+            if(EVENTO.estado == 1){
+                HALL_B_PRESSIONADO = 1;
+                printf("B pressionado");    
+
+            } else if(EVENTO.estado == 0 && HALL_B_PRESSIONADO == 1){
+                HALL_B_PRESSIONADO = 0;
+                send_mouse( 2, 0, 0, 0);
+                printf("CLIQUE DIR");
+
+            }
+
+        }
+
+    }
+
+}
+
 #define ANALOG_EIXO_X GPIO_NUM_2
 #define ANALOG_EIXO_Y  GPIO_NUM_15
 
@@ -156,7 +247,7 @@ void cursor_analog_teste(void *arg){
 
         }
 
-        send_mouse( 0, DESLOC_EIXO_X, DESLOC_EIXO_Y, 0);
+        //send_mouse( 0, DESLOC_EIXO_X, DESLOC_EIXO_Y, 0);
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -225,6 +316,11 @@ void cursor_analog_teste_task_start(void){
     return;
 }
 
+void botao_hall_teste_task_start(void){
+    xTaskCreate( botao_hall_teste, "botao_hall_teste", 2 * 1024, NULL, configMAX_PRIORITIES - 3, NULL);
+    return;
+}
+
 void bt_hid_task_start_up(void)
 {
     xTaskCreate(bt_hid_demo_task, "bt_hid_demo_task", 2 * 1024, NULL, configMAX_PRIORITIES - 3, &s_bt_hid_param.task_hdl);
@@ -281,6 +377,7 @@ static void bt_hidd_event_callback(void *handler_args, esp_event_base_t base, in
 
             bt_hid_task_start_up();
             cursor_analog_teste_task_start();
+            botao_hall_teste_task_start();
 
         } else {
 
